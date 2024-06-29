@@ -1,0 +1,291 @@
+---
+title: "Vehicle Fleet Fuel Economy Analysis using DNN - Data-exercise"
+format: html
+output: html_document
+---
+
+## Introduction
+
+The primary objective of this assignment is to analyze images of a fleet of vehicles to quantify the fuel consumption and greenhouse gas (GHG) footprint of the fleet, both as a whole and categorized by vehicle type.
+
+To achieve this, we utilized the ResNet50 image classifier, a pretrained open-source deep neural network, to process a set of 50 images representing the vehicle fleet. The ResNet50 model, deployed in TensorFlow, identified the type of vehicle in each image. This data was then used to create a frequency distribution table for the vehicle types present in the dataset. We combined this data with fuel economy figures from the Environmental Protection Agency (EPA). The resulting analysis allowed us to calculate the fuel consumption and GHG footprint of the fleet, broken down by vehicle and fuel types. Figure shows the flowchart of the overall process implemented in the project : 
+
+![](flow_chart.jpg)
+
+
+## Libraries and Setup:
+
+Several libraries are loaded at the beginning primarily tensorflow and keras for image classification and ggplot for visualization:
+
+```{r setup}
+library(keras)
+library(tensorflow)
+library(tidyverse)
+library(readxl)
+library(ggplot2)
+library(car)
+library(jpeg)
+```
+
+## Model Initialization:
+
+A pre-trained ResNet50 model is loaded with weights from ImageNet. Resnet50 was chosen since it provided a good trade off in terms of accuracy vs computational speed
+
+```{r}
+model <- application_resnet50(weights = 'imagenet')
+```
+
+## Image Directory and Object Count Initialization:
+
+The directory containing car images and an empty list to store object counts are specified. Train contains 50 images of cars. Some sample images are plotted here :
+
+```{r}
+img_dir <- 'train3'
+```
+
+```{r}
+object_counts <- list()
+```
+
+```{r}
+img_dir2 <- here::here("data-exercise","train3")
+
+# List all files in the directory
+all_files <- list.files(img_dir, pattern = "\\.jpg$|\\.jpeg$|\\.png$", full.names = TRUE)
+
+# Select four random image files
+set.seed(123)  # For reproducibility
+random_images <- sample(all_files, 4)
+
+# Initialize counter for vehicle labels
+vehicle_counter <- 1
+
+# Plot the images in a 2x2 grid
+par(mfrow = c(2, 2), mar = c(1, 1, 2, 1))
+
+for (img_path in random_images) {
+  # Read the image
+  img <- readJPEG(img_path)
+  
+  # Plot the image
+  plot(1:2, type = 'n', main = paste("Vehicle", vehicle_counter), xlab = "", ylab = "", axes = FALSE)
+  rasterImage(img, 1, 1, 2, 2)
+  
+    # Increment the counter
+  vehicle_counter <- vehicle_counter + 1
+}
+```
+
+## Image Processing Function:
+
+A function to process each image, make predictions, and decode the results is defined:
+
+```{r}
+process_image <- function(img_path) {
+  tryCatch({
+    img <- image_load(img_path, target_size = c(224, 224))
+    img_array <- image_to_array(img)
+    img_array <- array_reshape(img_array, c(1, 224, 224, 3))
+    img_array <- imagenet_preprocess_input(img_array)
+    
+    # Predict the image class
+    predictions <- model %>% predict(img_array)
+    decoded_predictions <- imagenet_decode_predictions(predictions, top = 3)[[1]]
+    while (sink.number() > 0) {
+      sink(NULL)
+     }
+    return(decoded_predictions)
+  }, error = function(e) {
+    print(paste("Error processing image", img_path, ":", e$message))
+    return(NULL)
+  })
+}
+```
+
+## Image Processing and Object Counting:
+
+Each image in the directory is processed, and the counts of recognized objects are recorded:
+
+filtered_object_counts
+
+```{r}
+# Process each image
+for (img_name in list.files(img_dir)) {
+  img_path <- file.path(img_dir, img_name)
+  predictions <- process_image(img_path)
+  if (length(predictions) > 0) {
+    t<-predictions[2]
+      label <- t$class_description[1]
+     if (is.null(object_counts[[label]])) {
+        object_counts[[label]] <- 0
+      }
+      object_counts[[label]] <- object_counts[[label]] + 1
+  }
+}
+
+# Filter out objects with count less than 4
+filtered_object_counts <- object_counts[sapply(object_counts, function(x) x > 2)]
+
+# Print the counts of each type of animal
+filtered_object_counts
+```
+
+## Visualization of Recognized Objects:
+
+A bar plot is created to visualize the frequency of recognized objects:
+
+```{r}
+objects <- names(filtered_object_counts)
+counts <- unlist(filtered_object_counts)
+
+ggplot(data.frame(Object = objects, Count = counts), aes(x = reorder(Object, Count), y = Count)) +
+  geom_bar(stat = 'identity', fill = 'skyblue') +
+  coord_flip() +
+  labs(x = 'Frequency', y = 'Object', title = 'Frequency of Recognized Objects') +
+  theme_minimal()
+
+```
+
+## Fuel Economy Data Processing:
+
+Fuel economy data is read from an Excel file (EPA data) and cleaned:
+
+```{r}
+data_clean <- read_excel('FE_EPA.xlsx', skip = 2)
+data_clean <- data_clean[, -c(1, 1)]
+names(data_clean) <- c('Vehicle Type', 'mpg Gasoline', 'mpg Diesel', 'Source')
+data_clean <- data_clean[1:11, ]
+```
+
+## Mapping Categories and Merging Data:
+
+Categories are mapped to the recognized objects and merged with the fuel economy data:
+
+```{r}
+categories <- c(
+  'beach_wagon' = 'Passenger Vehicle',
+  'cab' = 'Service Vehicle',
+  'car_wheel' = 'Passenger Vehicle',
+  'convertible' = 'Performance Vehicle',
+  'limousine' = 'Service Vehicle',
+  'minivan' = 'Passenger Vehicle',
+  'pickup' = 'Utility Vehicle',
+  'sports_car' = 'Performance Vehicle'
+)
+
+# Create DataFrame from filtered_object_counts
+vehicle_counts_df <- data.frame(
+  `Vehicle Type` = names(filtered_object_counts),
+  Count = unlist(filtered_object_counts)
+)
+
+vehicle_counts_df$Category <- sapply(vehicle_counts_df$`Vehicle.Type`, function(x) categories[[x]])
+
+# Map categories to types in the existing dataset
+excel_categories <- list(
+  'Passenger Vehicle' = c('Car'),
+  'Service Vehicle' = c('Transit Bus'),
+  'Performance Vehicle' = c('Car'),
+  'Utility Vehicle' = c('Delivery Truck')
+)
+
+# Matching categories to types
+vehicle_counts_df$`Excel Match` <- sapply(vehicle_counts_df$Category, function(x) excel_categories[[x]][1])
+
+# Merge with fuel economy data
+merged_data <- merge(vehicle_counts_df, data_clean, by.x = 'Excel Match', by.y = 'Vehicle Type', all.x = TRUE)
+
+# Calculate annual fuel consumption and emissions
+merged_data$`Annual Gasoline Consumption` <- (20000 / merged_data$`mpg Gasoline`) * merged_data$Count
+merged_data$`Annual Diesel Consumption` <- (20000 / merged_data$`mpg Diesel`) * merged_data$Count
+CO2_per_gallon_gasoline <- 8887  # grams of CO2 per gallon for gasoline
+CO2_per_gallon_diesel <- 10180  # grams of CO2 per gallon for diesel
+merged_data$`CO2 Emissions Gasoline (grams)` <- merged_data$`Annual Gasoline Consumption` * CO2_per_gallon_gasoline
+merged_data$`CO2 Emissions Diesel (grams)` <- merged_data$`Annual Diesel Consumption` * CO2_per_gallon_diesel
+```
+
+## Visualization of Fuel Consumption and Emissions:
+
+Several bar plots visualize annual fuel consumption and CO2 emissions by vehicle type:
+
+```{r}
+# Annual Gasoline and Diesel Consumption by Vehicle Type
+ggplot(merged_data, aes(x = reorder(`Vehicle.Type`, `Annual Gasoline Consumption`), y = `Annual Gasoline Consumption`)) +
+  geom_bar(stat = 'identity', fill = 'blue') +
+  coord_flip() +
+  labs(title = 'Annual Gasoline Consumption by Vehicle Type', x = 'Vehicle Type', y = 'Gasoline Consumption') +
+  theme_minimal()
+
+ggplot(merged_data, aes(x = reorder(`Vehicle.Type`, `Annual Diesel Consumption`), y = `Annual Diesel Consumption`)) +
+  geom_bar(stat = 'identity', fill = 'green') +
+  coord_flip() +
+  labs(title = 'Annual Diesel Consumption by Vehicle Type', x = 'Vehicle Type', y = 'Diesel Consumption') +
+  theme_minimal()
+
+# CO2 Emissions from Gasoline and Diesel by Vehicle Type
+ggplot(merged_data, aes(x = reorder(`Vehicle.Type`, `CO2 Emissions Gasoline (grams)`), y = `CO2 Emissions Gasoline (grams)`)) +
+  geom_bar(stat = 'identity', fill = 'red') +
+  coord_flip() +
+  labs(title = 'CO2 Emissions from Gasoline by Vehicle Type', x = 'Vehicle Type', y = 'CO2 Emissions (grams)') +
+  theme_minimal()
+
+ggplot(merged_data, aes(x = reorder(`Vehicle.Type`, `CO2 Emissions Diesel (grams)`), y = `CO2 Emissions Diesel (grams)`)) +
+  geom_bar(stat = 'identity', fill = 'brown') +
+  coord_flip() +
+  labs(title = 'CO2 Emissions from Diesel by Vehicle Type', x = 'Vehicle Type', y = 'CO2 Emissions (grams)') +
+  theme_minimal()
+```
+
+## Additional Analysis:
+
+Box plots, summary statistics, and scatter plots provide further insights into the fuel economy and GHG emmissions of the given fleet of vehicles by fuel type and vehicle type:
+
+```{r}
+# Box Plot of Annual Gasoline Consumption
+ggplot(merged_data, aes(x = Vehicle.Type, y = `Annual Gasoline Consumption`)) +
+  geom_boxplot() +
+  labs(title = 'Box Plot of Annual Gasoline Consumption', x = '', y = 'Gasoline Consumption') +
+  theme_minimal()
+
+# Summary statistics for gasoline and diesel consumption
+summary(merged_data$`Annual Gasoline Consumption`)
+summary(merged_data$`Annual Diesel Consumption`)
+
+# Scatter Plot of Gasoline vs Diesel Consumption
+ggplot(merged_data, aes(x = `Annual Gasoline Consumption`, y = `Annual Diesel Consumption`)) +
+  geom_point(color = 'blue') +
+  labs(title = 'Scatter Plot of Gasoline vs Diesel Consumption', x = 'Annual Gasoline Consumption', y = 'Annual Diesel Consumption') +
+  theme_minimal() 
+```
+
+## QQ Plot for Normality Check:
+
+A QQ plot is used to check the normality of the annual gasoline consumption:
+
+```{r}
+# QQ Plot for Annual Gasoline Consumption
+qqPlot(merged_data$`Annual Gasoline Consumption`, main = "QQ Plot for Annual Gasoline Consumption")
+
+qqPlot(merged_data$`Annual Diesel Consumption`, main = "QQ Plot for Annual Diesel Consumption")
+```
+
+## Conclusion
+
+Based on the analysis, we can conclude that commercial vehicles and pickup trucks have up to 50% higher fuel consumption and greenhouse gas (GHG) emissions compared to cars. The visualizations support this by showing that limousines and cabs have the highest annual gasoline and diesel consumption, followed closely by pickup trucks. The high fuel consumption of commercial vehicles is due to their higher mileage, while pickup trucks have higher fuel consumption due to lower efficiency.
+
+Additionally, the plots indicate that vehicles like sports cars and beach wagons have lower fuel consumption compared to commercial vehicles and pickup trucks. Diesel vehicles within the same category are shown to be more efficient than gasoline vehicles, leading to better fuel economy and relatively lower CO2 emissions. The bar plots for CO2 emissions from gasoline and diesel consumption reinforce the finding that limousines and cabs emit the most CO2, followed by pickup trucks, sports cars, and beach wagons.
+
+The specific insights from the plots are as follows:
+
+Annual Gasoline Consumption: Limousines and cabs show the highest consumption, followed by pickup trucks.
+
+Annual Diesel Consumption: Limousines and cabs again lead in consumption, with pickup trucks also showing significant diesel use.
+
+CO2 Emissions from Gasoline: Limousines and cabs produce the most emissions, followed by pickup trucks and sports cars.
+
+CO2 Emissions from Diesel: Limousines and cabs remain the highest emitters, with pickup trucks and sports cars also contributing significantly.
+
+These findings highlight the higher environmental impact of commercial vehicles and pickup trucks compared to other vehicle types.
+
+We successfully identified vehicle types from the given image data set and quantified their distribution by type using Resnet in tensorflow environment. Additionally, we classified the vehicles based on their fuel type, allowing us to assess the fuel economy of gasoline and diesel vehicles using summary statistics and scatter plots. The EPA data was instrumental in converting frequency distribution data into actual fuel economy figures and GHG emissions. This tool can be further refined to efficiently quantify fuel consumption and related expenses using images of existing vehicle fleets. Its capability to process images also makes it adaptable for analyzing real-time traffic camera data to quantify GHG emissions and pollution levels in urban environments.
+
